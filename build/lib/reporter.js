@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 'use strict';
+Object.defineProperty(exports, "__esModule", { value: true });
 var es = require("event-stream");
 var _ = require("underscore");
 var util = require("gulp-util");
@@ -29,29 +30,37 @@ try {
     fs.mkdirSync(path.dirname(buildLogPath));
 }
 catch (err) {
+    // ignore
 }
 function log() {
     var errors = _.flatten(allErrors);
-    errors.map(function (err) { return util.log(util.colors.red('Error') + ": " + err); });
+    var seen = new Set();
+    errors.map(function (err) {
+        if (!seen.has(err)) {
+            seen.add(err);
+            util.log(util.colors.red('Error') + ": " + err);
+        }
+    });
     var regex = /^([^(]+)\((\d+),(\d+)\): (.*)$/;
     var messages = errors
         .map(function (err) { return regex.exec(err); })
         .filter(function (match) { return !!match; })
         .map(function (_a) {
         var path = _a[1], line = _a[2], column = _a[3], message = _a[4];
-        return ({ path: path, line: Number.parseInt(line), column: Number.parseInt(column), message: message });
+        return ({ path: path, line: parseInt(line), column: parseInt(column), message: message });
     });
     try {
         fs.writeFileSync(buildLogPath, JSON.stringify(messages));
     }
     catch (err) {
+        //noop
     }
     util.log("Finished " + util.colors.green('compilation') + " with " + errors.length + " errors after " + util.colors.magenta((new Date().getTime() - startTime) + ' ms'));
 }
 function createReporter() {
     var errors = [];
     allErrors.push(errors);
-    var ReportFunc = (function () {
+    var ReportFunc = /** @class */ (function () {
         function ReportFunc(err) {
             errors.push(err);
         }
@@ -64,8 +73,13 @@ function createReporter() {
             return es.through(null, function () {
                 onEnd();
                 if (emitError && errors.length > 0) {
-                    log();
-                    this.emit('error');
+                    errors.__logged__ = true;
+                    if (!errors.__logged__) {
+                        log();
+                    }
+                    var err = new Error("Found " + errors.length + " errors");
+                    err.__reporter__ = true;
+                    this.emit('error', err);
                 }
                 else {
                     this.emit('end');
@@ -77,4 +91,3 @@ function createReporter() {
     return ReportFunc;
 }
 exports.createReporter = createReporter;
-;

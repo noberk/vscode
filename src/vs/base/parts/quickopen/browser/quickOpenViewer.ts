@@ -7,6 +7,7 @@ import { TPromise } from 'vs/base/common/winjs.base';
 import { isFunction } from 'vs/base/common/types';
 import { ITree, IRenderer, IFilter, IDataSource, IAccessibilityProvider } from 'vs/base/parts/tree/browser/tree';
 import { IModel } from 'vs/base/parts/quickopen/common/quickOpen';
+import { IQuickOpenStyles } from 'vs/base/parts/quickopen/browser/quickOpenWidget';
 
 export interface IModelProvider {
 	getModel<T>(): IModel<T>;
@@ -49,10 +50,20 @@ export class DataSource implements IDataSource {
 export class AccessibilityProvider implements IAccessibilityProvider {
 	constructor(private modelProvider: IModelProvider) { }
 
-	public getAriaLabel(tree: ITree, element: any): string {
+	getAriaLabel(tree: ITree, element: any): string {
 		const model = this.modelProvider.getModel();
 
 		return model.accessibilityProvider && model.accessibilityProvider.getAriaLabel(element);
+	}
+
+	getPosInSet(tree: ITree, element: any): string {
+		const model = this.modelProvider.getModel();
+		return String(model.entries.indexOf(element) + 1);
+	}
+
+	getSetSize(): string {
+		const model = this.modelProvider.getModel();
+		return String(model.entries.length);
 	}
 }
 
@@ -72,8 +83,15 @@ export class Filter implements IFilter {
 }
 
 export class Renderer implements IRenderer {
+	private styles: IQuickOpenStyles;
 
-	constructor(private modelProvider: IModelProvider) { }
+	constructor(private modelProvider: IModelProvider, styles: IQuickOpenStyles) {
+		this.styles = styles;
+	}
+
+	updateStyles(styles: IQuickOpenStyles): void {
+		this.styles = styles;
+	}
 
 	getHeight(tree: ITree, element: any): number {
 		const model = this.modelProvider.getModel();
@@ -87,12 +105,12 @@ export class Renderer implements IRenderer {
 
 	renderTemplate(tree: ITree, templateId: string, container: HTMLElement): any {
 		const model = this.modelProvider.getModel();
-		return model.renderer.renderTemplate(templateId, container);
+		return model.renderer.renderTemplate(templateId, container, this.styles);
 	}
 
 	renderElement(tree: ITree, element: any, templateId: string, templateData: any): void {
 		const model = this.modelProvider.getModel();
-		model.renderer.renderElement(element, templateId, templateData);
+		model.renderer.renderElement(element, templateId, templateData, this.styles);
 	}
 
 	disposeTemplate(tree: ITree, templateId: string, templateData: any): void {

@@ -51,15 +51,19 @@ suite('URI', () => {
 	test('URI#fsPath - no `fsPath` when no `path`', () => {
 		const value = URI.parse('file://%2Fhome%2Fticino%2Fdesktop%2Fcpluscplus%2Ftest.cpp');
 		assert.equal(value.authority, '/home/ticino/desktop/cpluscplus/test.cpp');
-		assert.equal(value.path, '');
-		assert.equal(value.fsPath, '');
+		assert.equal(value.path, '/');
+		if (isWindows) {
+			assert.equal(value.fsPath, '\\');
+		} else {
+			assert.equal(value.fsPath, '/');
+		}
 	});
 
 	test('http#toString', () => {
 		assert.equal(URI.from({ scheme: 'http', authority: 'www.msft.com', path: '/my/path' }).toString(), 'http://www.msft.com/my/path');
 		assert.equal(URI.from({ scheme: 'http', authority: 'www.msft.com', path: '/my/path' }).toString(), 'http://www.msft.com/my/path');
 		assert.equal(URI.from({ scheme: 'http', authority: 'www.MSFT.com', path: '/my/path' }).toString(), 'http://www.msft.com/my/path');
-		assert.equal(URI.from({ scheme: 'http', authority: '', path: 'my/path' }).toString(), 'http:my/path');
+		assert.equal(URI.from({ scheme: 'http', authority: '', path: 'my/path' }).toString(), 'http:/my/path');
 		assert.equal(URI.from({ scheme: 'http', authority: '', path: '/my/path' }).toString(), 'http:/my/path');
 		assert.equal(URI.from({ scheme: '', authority: '', path: 'my/path' }).toString(), 'my/path');
 		assert.equal(URI.from({ scheme: '', authority: '', path: '/my/path' }).toString(), '/my/path');
@@ -213,7 +217,7 @@ suite('URI', () => {
 		value = URI.parse('file:?q');
 		assert.equal(value.scheme, 'file');
 		assert.equal(value.authority, '');
-		assert.equal(value.path, '');
+		assert.equal(value.path, '/');
 		assert.equal(value.query, 'q');
 		assert.equal(value.fragment, '');
 
@@ -227,7 +231,7 @@ suite('URI', () => {
 		value = URI.parse('file:#d');
 		assert.equal(value.scheme, 'file');
 		assert.equal(value.authority, '');
-		assert.equal(value.path, '');
+		assert.equal(value.path, '/');
 		assert.equal(value.query, '');
 		assert.equal(value.fragment, 'd');
 
@@ -310,6 +314,11 @@ suite('URI', () => {
 		}
 	});
 
+	test('VSCode URI module\'s driveLetterPath regex is incorrect, #32961', function () {
+		let uri = URI.parse('file:///_:/path');
+		assert.equal(uri.fsPath, isWindows ? '\\_:\\path' : '/_:/path');
+	});
+
 	test('URI#file, no path-is-uri check', () => {
 
 		// we don't complain here
@@ -363,6 +372,23 @@ suite('URI', () => {
 		assert.equal(value.toString(), 'http://l%C3%B6calhost:8080/far');
 	});
 
+	test('URI#toString, user information in authority', () => {
+		var value = URI.parse('http://foo:bar@localhost/far');
+		assert.equal(value.toString(), 'http://foo:bar@localhost/far');
+
+		value = URI.parse('http://foo@localhost/far');
+		assert.equal(value.toString(), 'http://foo@localhost/far');
+
+		value = URI.parse('http://foo:bAr@localhost:8080/far');
+		assert.equal(value.toString(), 'http://foo:bAr@localhost:8080/far');
+
+		value = URI.parse('http://foo@localhost:8080/far');
+		assert.equal(value.toString(), 'http://foo@localhost:8080/far');
+
+		value = URI.from({ scheme: 'http', authority: 'föö:bör@löcalhost:8080', path: '/far', query: undefined, fragment: undefined });
+		assert.equal(value.toString(), 'http://f%C3%B6%C3%B6:b%C3%B6r@l%C3%B6calhost:8080/far');
+	});
+
 	test('correctFileUriToFilePath2', () => {
 
 		var test = (input: string, expected: string) => {
@@ -399,8 +425,41 @@ suite('URI', () => {
 		uri2 = URI.parse(uri.toString());
 		assert.equal(uri2.query, 'LinkId=518008&foö&ké¥=üü');
 		assert.equal(uri2.query, uri.query);
+
+		// #24849
+		uri = URI.parse('https://twitter.com/search?src=typd&q=%23tag');
+		assert.equal(uri.toString(true), 'https://twitter.com/search?src=typd&q=%23tag');
 	});
 
+
+	test('class URI cannot represent relative file paths #34449', function () {
+
+		let path = '/foo/bar';
+		assert.equal(URI.file(path).path, path);
+		path = 'foo/bar';
+		assert.equal(URI.file(path).path, '/foo/bar');
+		path = './foo/bar';
+		assert.equal(URI.file(path).path, '/./foo/bar'); // todo@joh missing normalization
+
+		const fileUri1 = URI.parse(`file:foo/bar`);
+		assert.equal(fileUri1.path, '/foo/bar');
+		assert.equal(fileUri1.authority, '');
+		const uri = fileUri1.toString();
+		assert.equal(uri, 'file:///foo/bar');
+		const fileUri2 = URI.parse(uri);
+		assert.equal(fileUri2.path, '/foo/bar');
+		assert.equal(fileUri2.authority, '');
+	});
+
+	test('Ctrl click to follow hash query param url gets urlencoded #49628', function () {
+		let input = 'http://localhost:3000/#/foo?bar=baz';
+		let uri = URI.parse(input);
+		assert.equal(uri.toString(true), input);
+
+		input = 'http://localhost:3000/foo?bar=baz';
+		uri = URI.parse(input);
+		assert.equal(uri.toString(true), input);
+	});
 
 	test('URI - (de)serialize', function () {
 

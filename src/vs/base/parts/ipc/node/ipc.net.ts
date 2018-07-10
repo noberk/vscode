@@ -7,8 +7,7 @@
 
 import { Socket, Server as NetServer, createConnection, createServer } from 'net';
 import { TPromise } from 'vs/base/common/winjs.base';
-import Event, { Emitter, once, mapEvent } from 'vs/base/common/event';
-import { fromEventEmitter } from 'vs/base/node/event';
+import { Event, Emitter, once, mapEvent, fromNodeEventEmitter } from 'vs/base/common/event';
 import { IMessagePassingProtocol, ClientConnectionEvent, IPCServer, IPCClient } from 'vs/base/parts/ipc/common/ipc';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -17,24 +16,24 @@ import { generateUuid } from 'vs/base/common/uuid';
 export function generateRandomPipeName(): string {
 	const randomSuffix = generateUuid();
 	if (process.platform === 'win32') {
-		return `\\\\.\\pipe\\vscode-${randomSuffix}-sock`;
+		return `\\\\.\\pipe\\vscode-ipc-${randomSuffix}-sock`;
 	} else {
 		// Mac/Unix: use socket file
-		return join(tmpdir(), `vscode-${randomSuffix}.sock`);
+		return join(tmpdir(), `vscode-ipc-${randomSuffix}.sock`);
 	}
 }
 
 export class Protocol implements IMessagePassingProtocol {
 
-	private static _headerLen = 17;
+	private static readonly _headerLen = 17;
 
 	private _onMessage = new Emitter<any>();
 
 	readonly onMessage: Event<any> = this._onMessage.event;
 
-	constructor(private _socket: Socket) {
+	constructor(private _socket: Socket, firstDataChunk?: Buffer) {
 
-		let chunks = [];
+		let chunks: Buffer[] = [];
 		let totalLength = 0;
 
 		const state = {
@@ -43,7 +42,7 @@ export class Protocol implements IMessagePassingProtocol {
 			bodyLen: -1,
 		};
 
-		_socket.on('data', (data: Buffer) => {
+		const acceptChunk = (data: Buffer) => {
 
 			chunks.push(data);
 			totalLength += data.length;
@@ -94,6 +93,23 @@ export class Protocol implements IMessagePassingProtocol {
 					}
 				}
 			}
+		};
+
+		const acceptFirstDataChunk = () => {
+			if (firstDataChunk && firstDataChunk.length > 0) {
+				let tmp = firstDataChunk;
+				firstDataChunk = null;
+				acceptChunk(tmp);
+			}
+		};
+
+		_socket.on('data', (data: Buffer) => {
+			acceptFirstDataChunk();
+			acceptChunk(data);
+		});
+
+		_socket.on('end', () => {
+			acceptFirstDataChunk();
 		});
 	}
 
@@ -156,11 +172,11 @@ export class Protocol implements IMessagePassingProtocol {
 export class Server extends IPCServer {
 
 	private static toClientConnectionEvent(server: NetServer): Event<ClientConnectionEvent> {
-		const onConnection = fromEventEmitter<Socket>(server, 'connection');
+		const onConnection = fromNodeEventEmitter<Socket>(server, 'connection');
 
 		return mapEvent(onConnection, socket => ({
 			protocol: new Protocol(socket),
-			onDidClientDisconnect: once(fromEventEmitter<void>(socket, 'close'))
+			onDidClientDisconnect: once(fromNodeEventEmitter<void>(socket, 'close'))
 		}));
 	}
 
@@ -206,6 +222,7 @@ export function serve(hook: any): TPromise<Server> {
 	});
 }
 
+export function connect(options: { host: string, port: number }, clientId: string): TPromise<Client>;
 export function connect(port: number, clientId: string): TPromise<Client>;
 export function connect(namedPipe: string, clientId: string): TPromise<Client>;
 export function connect(hook: any, clientId: string): TPromise<Client> {

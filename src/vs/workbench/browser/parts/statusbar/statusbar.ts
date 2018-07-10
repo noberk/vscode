@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import { Registry } from 'vs/platform/platform';
+import { Registry } from 'vs/platform/registry/common/platform';
 import { IDisposable } from 'vs/base/common/lifecycle';
 import * as statusbarService from 'vs/platform/statusbar/common/statusbar';
 import { SyncDescriptor0, createSyncDescriptor } from 'vs/platform/instantiation/common/descriptors';
@@ -17,10 +17,9 @@ export interface IStatusbarItem {
 export import StatusbarAlignment = statusbarService.StatusbarAlignment;
 
 export class StatusbarItemDescriptor {
-
-	public syncDescriptor: SyncDescriptor0<IStatusbarItem>;
-	public alignment: StatusbarAlignment;
-	public priority: number;
+	syncDescriptor: SyncDescriptor0<IStatusbarItem>;
+	alignment: StatusbarAlignment;
+	priority: number;
 
 	constructor(ctor: IConstructorSignature0<IStatusbarItem>, alignment?: StatusbarAlignment, priority?: number) {
 		this.syncDescriptor = createSyncDescriptor(ctor);
@@ -42,11 +41,11 @@ class StatusbarRegistry implements IStatusbarRegistry {
 		this._items = [];
 	}
 
-	public get items(): StatusbarItemDescriptor[] {
+	get items(): StatusbarItemDescriptor[] {
 		return this._items;
 	}
 
-	public registerStatusbarItem(descriptor: StatusbarItemDescriptor): void {
+	registerStatusbarItem(descriptor: StatusbarItemDescriptor): void {
 		this._items.push(descriptor);
 	}
 }

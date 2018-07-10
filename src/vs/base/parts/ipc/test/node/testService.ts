@@ -5,8 +5,8 @@
 'use strict';
 
 import { TPromise, PPromise } from 'vs/base/common/winjs.base';
-import { IChannel, eventToCall, eventFromCall } from 'vs/base/parts/ipc/common/ipc';
-import Event, { Emitter } from 'vs/base/common/event';
+import { IChannel } from 'vs/base/parts/ipc/common/ipc';
+import { Event, Emitter } from 'vs/base/common/event';
 
 export interface IMarcoPoloEvent {
 	answer: string;
@@ -45,7 +45,7 @@ export class TestService implements ITestService {
 			this._data += this._data;
 		}
 		const self = this;
-		return new PPromise((complete, error, progress) => {
+		return new PPromise<any, any[]>((complete, error, progress) => {
 			let j = 0;
 			function send() {
 				if (j >= batches) {
@@ -61,13 +61,16 @@ export class TestService implements ITestService {
 				}
 				progress(batch);
 				process.nextTick(send);
-			};
+			}
 			process.nextTick(send);
 		});
 	}
 }
 
 export interface ITestChannel extends IChannel {
+	listen<IMarcoPoloEvent>(event: 'marco'): Event<IMarcoPoloEvent>;
+	listen<T>(event: string, arg?: any): Event<T>;
+
 	call(command: 'marco'): TPromise<any>;
 	call(command: 'pong', ping: string): TPromise<any>;
 	call(command: 'cancelMe'): TPromise<any>;
@@ -79,12 +82,19 @@ export class TestChannel implements ITestChannel {
 
 	constructor(private testService: ITestService) { }
 
+	listen(event: string, arg?: any): Event<any> {
+		switch (event) {
+			case 'marco': return this.testService.onMarco;
+		}
+
+		throw new Error('Event not found');
+	}
+
 	call(command: string, ...args: any[]): TPromise<any> {
 		switch (command) {
 			case 'pong': return this.testService.pong(args[0]);
 			case 'cancelMe': return this.testService.cancelMe();
 			case 'marco': return this.testService.marco();
-			case 'event:marco': return eventToCall(this.testService.onMarco);
 			case 'batchPerf': return this.testService.batchPerf(args[0].batches, args[0].size, args[0].dataSize);
 			default: return TPromise.wrapError(new Error('command not found'));
 		}
@@ -93,12 +103,9 @@ export class TestChannel implements ITestChannel {
 
 export class TestServiceClient implements ITestService {
 
-	private _onMarco: Event<IMarcoPoloEvent>;
-	get onMarco(): Event<IMarcoPoloEvent> { return this._onMarco; };
+	get onMarco(): Event<IMarcoPoloEvent> { return this.channel.listen('marco'); }
 
-	constructor(private channel: ITestChannel) {
-		this._onMarco = eventFromCall(channel, 'event:marco');
-	}
+	constructor(private channel: ITestChannel) { }
 
 	marco(): TPromise<string> {
 		return this.channel.call('marco');

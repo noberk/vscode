@@ -7,8 +7,8 @@
 
 import * as assert from 'assert';
 import URI from 'vs/base/common/uri';
-import { join } from 'vs/base/common/paths';
-import { FileChangeType, FileChangesEvent, isEqual, isParent, isEqualOrParent, indexOf } from 'vs/platform/files/common/files';
+import { join, isEqual, isEqualOrParent } from 'vs/base/common/paths';
+import { FileChangeType, FileChangesEvent, isParent } from 'vs/platform/files/common/files';
 import { isLinux, isMacintosh, isWindows } from 'vs/base/common/platform';
 
 suite('Files', () => {
@@ -186,17 +186,5 @@ suite('Files', () => {
 			assert(!isEqualOrParent('foo/bar/test.ts', 'foo/bar/test.', true));
 			assert(!isEqualOrParent('foo/bar/test.ts', 'foo/BAR/test.', true));
 		}
-	});
-
-	test('indexOf (ignorecase)', function () {
-		assert.equal(indexOf('/some/path', '/some/path', true), 0);
-		assert.equal(indexOf('/some/path/more', '/some/path', true), 0);
-
-		assert.equal(indexOf('c:\\some\\path', 'c:\\some\\path', true), 0);
-		assert.equal(indexOf('c:\\some\\path\\more', 'c:\\some\\path', true), 0);
-
-		assert.equal(indexOf('/some/path', '/some/other/path', true), -1);
-
-		assert.equal(indexOf('/some/path', '/some/PATH', true), 0);
 	});
 });

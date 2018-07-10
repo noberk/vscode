@@ -6,40 +6,80 @@
 'use strict';
 
 import 'vs/css!./button';
-import { EventEmitter } from 'vs/base/common/eventEmitter';
-import DOM = require('vs/base/browser/dom');
+import * as DOM from 'vs/base/browser/dom';
 import { Builder, $ } from 'vs/base/browser/builder';
 import { StandardKeyboardEvent } from 'vs/base/browser/keyboardEvent';
 import { KeyCode } from 'vs/base/common/keyCodes';
+import { Color } from 'vs/base/common/color';
+import { mixin } from 'vs/base/common/objects';
+import { Event as BaseEvent, Emitter } from 'vs/base/common/event';
+import { Disposable } from 'vs/base/common/lifecycle';
+import { Gesture, EventType } from 'vs/base/browser/touch';
 
-export class Button extends EventEmitter {
+export interface IButtonOptions extends IButtonStyles {
+	title?: boolean;
+}
+
+export interface IButtonStyles {
+	buttonBackground?: Color;
+	buttonHoverBackground?: Color;
+	buttonForeground?: Color;
+	buttonBorder?: Color;
+}
+
+const defaultOptions: IButtonStyles = {
+	buttonBackground: Color.fromHex('#0E639C'),
+	buttonHoverBackground: Color.fromHex('#006BB3'),
+	buttonForeground: Color.white
+};
+
+export class Button extends Disposable {
 
 	private $el: Builder;
+	private options: IButtonOptions;
 
-	constructor(container: Builder);
-	constructor(container: HTMLElement);
-	constructor(container: any) {
+	private buttonBackground: Color;
+	private buttonHoverBackground: Color;
+	private buttonForeground: Color;
+	private buttonBorder: Color;
+
+	private _onDidClick = this._register(new Emitter<any>());
+	get onDidClick(): BaseEvent<Event> { return this._onDidClick.event; }
+
+	private focusTracker: DOM.IFocusTracker;
+
+	constructor(container: HTMLElement, options?: IButtonOptions) {
 		super();
 
-		this.$el = $('a.monaco-button').attr({
+		this.options = options || Object.create(null);
+		mixin(this.options, defaultOptions, false);
+
+		this.buttonBackground = this.options.buttonBackground;
+		this.buttonHoverBackground = this.options.buttonHoverBackground;
+		this.buttonForeground = this.options.buttonForeground;
+		this.buttonBorder = this.options.buttonBorder;
+
+		this.$el = this._register($('a.monaco-button').attr({
 			'tabIndex': '0',
 			'role': 'button'
-		}).appendTo(container);
+		}).appendTo(container));
 
-		this.$el.on(DOM.EventType.CLICK, (e) => {
+		Gesture.addTarget(this.$el.getHTMLElement());
+
+		this.$el.on([DOM.EventType.CLICK, EventType.Tap], e => {
 			if (!this.enabled) {
 				DOM.EventHelper.stop(e);
 				return;
 			}
 
-			this.emit(DOM.EventType.CLICK, e);
+			this._onDidClick.fire(e);
 		});
 
-		this.$el.on(DOM.EventType.KEY_DOWN, (e: KeyboardEvent) => {
-			let event = new StandardKeyboardEvent(e);
+		this.$el.on(DOM.EventType.KEY_DOWN, e => {
+			const event = new StandardKeyboardEvent(e as KeyboardEvent);
 			let eventHandled = false;
 			if (this.enabled && event.equals(KeyCode.Enter) || event.equals(KeyCode.Space)) {
-				this.emit(DOM.EventType.CLICK, e);
+				this._onDidClick.fire(e);
 				eventHandled = true;
 			} else if (event.equals(KeyCode.Escape)) {
 				this.$el.domBlur();
@@ -50,9 +90,57 @@ export class Button extends EventEmitter {
 				DOM.EventHelper.stop(event, true);
 			}
 		});
+
+		this.$el.on(DOM.EventType.MOUSE_OVER, e => {
+			if (!this.$el.hasClass('disabled')) {
+				this.setHoverBackground();
+			}
+		});
+
+		this.$el.on(DOM.EventType.MOUSE_OUT, e => {
+			this.applyStyles(); // restore standard styles
+		});
+
+		// Also set hover background when button is focused for feedback
+		this.focusTracker = this._register(DOM.trackFocus(this.$el.getHTMLElement()));
+		this._register(this.focusTracker.onDidFocus(() => this.setHoverBackground()));
+		this._register(this.focusTracker.onDidBlur(() => this.applyStyles())); // restore standard styles
+
+		this.applyStyles();
 	}
 
-	getElement(): HTMLElement {
+	private setHoverBackground(): void {
+		const hoverBackground = this.buttonHoverBackground ? this.buttonHoverBackground.toString() : null;
+		if (hoverBackground) {
+			this.$el.style('background-color', hoverBackground);
+		}
+	}
+
+	style(styles: IButtonStyles): void {
+		this.buttonForeground = styles.buttonForeground;
+		this.buttonBackground = styles.buttonBackground;
+		this.buttonHoverBackground = styles.buttonHoverBackground;
+		this.buttonBorder = styles.buttonBorder;
+
+		this.applyStyles();
+	}
+
+	private applyStyles(): void {
+		if (this.$el) {
+			const background = this.buttonBackground ? this.buttonBackground.toString() : null;
+			const foreground = this.buttonForeground ? this.buttonForeground.toString() : null;
+			const border = this.buttonBorder ? this.buttonBorder.toString() : null;
+
+			this.$el.style('color', foreground);
+			this.$el.style('background-color', background);
+
+			this.$el.style('border-width', border ? '1px' : null);
+			this.$el.style('border-style', border ? 'solid' : null);
+			this.$el.style('border-color', border);
+		}
+	}
+
+	get element(): HTMLElement {
 		return this.$el.getHTMLElement();
 	}
 
@@ -61,6 +149,9 @@ export class Button extends EventEmitter {
 			this.$el.addClass('monaco-text-button');
 		}
 		this.$el.text(value);
+		if (this.options.title) {
+			this.$el.title(value);
+		}
 	}
 
 	set icon(iconClassName: string) {
@@ -88,13 +179,48 @@ export class Button extends EventEmitter {
 	focus(): void {
 		this.$el.domFocus();
 	}
+}
 
-	dispose(): void {
-		if (this.$el) {
-			this.$el.dispose();
-			this.$el = null;
+export class ButtonGroup extends Disposable {
+	private _buttons: Button[] = [];
+
+	constructor(container: HTMLElement, count: number, options?: IButtonOptions) {
+		super();
+
+		this.create(container, count, options);
+	}
+
+	get buttons(): Button[] {
+		return this._buttons;
+	}
+
+	private create(container: HTMLElement, count: number, options?: IButtonOptions): void {
+		for (let index = 0; index < count; index++) {
+			const button = this._register(new Button(container, options));
+			this._buttons.push(button);
+
+			// Implement keyboard access in buttons if there are multiple
+			if (count > 1) {
+				$(button.element).on(DOM.EventType.KEY_DOWN, e => {
+					const event = new StandardKeyboardEvent(e as KeyboardEvent);
+					let eventHandled = true;
+
+					// Next / Previous Button
+					let buttonIndexToFocus: number;
+					if (event.equals(KeyCode.LeftArrow)) {
+						buttonIndexToFocus = index > 0 ? index - 1 : this._buttons.length - 1;
+					} else if (event.equals(KeyCode.RightArrow)) {
+						buttonIndexToFocus = index === this._buttons.length - 1 ? 0 : index + 1;
+					} else {
+						eventHandled = false;
+					}
+
+					if (eventHandled) {
+						this._buttons[buttonIndexToFocus].focus();
+						DOM.EventHelper.stop(e, true);
+					}
+				}, this.toDispose);
+			}
 		}
-
-		super.dispose();
 	}
 }

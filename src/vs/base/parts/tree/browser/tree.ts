@@ -4,25 +4,28 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import WinJS = require('vs/base/common/winjs.base');
-import Touch = require('vs/base/browser/touch');
-import Events = require('vs/base/common/eventEmitter');
-import Mouse = require('vs/base/browser/mouseEvent');
-import Keyboard = require('vs/base/browser/keyboardEvent');
+import * as WinJS from 'vs/base/common/winjs.base';
+import * as Touch from 'vs/base/browser/touch';
+import * as Mouse from 'vs/base/browser/mouseEvent';
+import * as Keyboard from 'vs/base/browser/keyboardEvent';
 import { INavigator } from 'vs/base/common/iterator';
 import { ScrollbarVisibility } from 'vs/base/common/scrollable';
-import Event from 'vs/base/common/event';
-import { IAction, IActionItem } from "vs/base/common/actions";
-import { Color } from "vs/base/common/color";
+import { Event } from 'vs/base/common/event';
+import { IAction, IActionItem } from 'vs/base/common/actions';
+import { Color } from 'vs/base/common/color';
+import { IItemCollapseEvent, IItemExpandEvent } from 'vs/base/parts/tree/browser/treeModel';
 
-export interface ITree extends Events.IEventEmitter {
+export interface ITree {
 
-	emit(eventType: string, data?: any): void;
-
-	onDOMFocus: Event<void>;
-	onDOMBlur: Event<void>;
-	onHighlightChange: Event<void>;
-	onDispose: Event<void>;
+	onDidFocus: Event<void>;
+	onDidBlur: Event<void>;
+	onDidChangeFocus: Event<IFocusEvent>;
+	onDidChangeSelection: Event<ISelectionEvent>;
+	onDidChangeHighlight: Event<IHighlightEvent>;
+	onDidExpandItem: Event<IItemExpandEvent>;
+	onDidCollapseItem: Event<IItemCollapseEvent>;
+	onDidDispose: Event<void>;
+	onDidScroll: Event<void>;
 
 	/**
 	 * Returns the tree's DOM element.
@@ -58,7 +61,7 @@ export interface ITree extends Events.IEventEmitter {
 	/**
 	 * Sets DOM focus on the tree.
 	 */
-	DOMFocus(): void;
+	domFocus(): void;
 
 	/**
 	 * Returns whether the tree has DOM focus.
@@ -68,7 +71,7 @@ export interface ITree extends Events.IEventEmitter {
 	/**
 	 * Removes DOM focus from the tree.
 	 */
-	DOMBlur(): void;
+	domBlur(): void;
 
 	/**
 	 * Refreshes an element.
@@ -77,9 +80,9 @@ export interface ITree extends Events.IEventEmitter {
 	refresh(element?: any, recursive?: boolean): WinJS.Promise;
 
 	/**
-	 * Refreshes all given elements.
+	 * Updates an element's width.
 	 */
-	refreshAll(elements: any[], recursive?: boolean): WinJS.Promise;
+	updateWidth(element: any): void;
 
 	/**
 	 * Expands an element.
@@ -107,9 +110,16 @@ export interface ITree extends Events.IEventEmitter {
 	collapseAll(elements?: any[], recursive?: boolean): WinJS.Promise;
 
 	/**
+	 * Collapses several elements.
+	 * Collapses all elements at the greatest tree depth that has expanded elements.
+	 * The returned promise returns a boolean for whether the elements were collapsed or not.
+	 */
+	collapseDeepestExpandedLevel(): WinJS.Promise;
+
+	/**
 	 * Toggles an element's expansion state.
 	 */
-	toggleExpansion(element: any): WinJS.Promise;
+	toggleExpansion(element: any, recursive?: boolean): WinJS.Promise;
 
 	/**
 	 * Toggles several element's expansion state.
@@ -138,6 +148,11 @@ export interface ITree extends Events.IEventEmitter {
 	 * Useful when calling `reveal(element, relativeTop)`.
 	 */
 	getRelativeTop(element: any): number;
+
+	/**
+	 * Returns the top-most visible element.
+	 */
+	getFirstVisibleElement(): any;
 
 	/**
 	 * Returns a number between 0 and 1 representing how much the tree is scroll down. 0 means all the way
@@ -283,9 +298,10 @@ export interface ITree extends Events.IEventEmitter {
 	focusFirstChild(eventPayload?: any): void;
 
 	/**
-	 * Focuses the second element, in visible order.
+	 * Focuses the second element, in visible order. Will focus the first
+	 * child from the provided element's parent if any.
 	 */
-	focusFirst(eventPayload?: any): void;
+	focusFirst(eventPayload?: any, from?: any): void;
 
 	/**
 	 * Focuses the nth element, in visible order.
@@ -293,9 +309,10 @@ export interface ITree extends Events.IEventEmitter {
 	focusNth(index: number, eventPayload?: any): void;
 
 	/**
-	 * Focuses the last element, in visible order.
+	 * Focuses the last element, in visible order. Will focus the last
+	 * child from the provided element's parent if any.
 	 */
-	focusLast(eventPayload?: any): void;
+	focusLast(eventPayload?: any, from?: any): void;
 
 	/**
 	 * Focuses the element at the end of the next page, in visible order.
@@ -431,6 +448,18 @@ export interface IAccessibilityProvider {
 	 * See also: https://www.w3.org/TR/wai-aria/states_and_properties#aria-label
 	 */
 	getAriaLabel(tree: ITree, element: any): string;
+
+	/**
+	 * Given an element in the tree return its aria-posinset. Should be between 1 and aria-setsize
+	 * https://www.w3.org/TR/wai-aria/states_and_properties#aria-posinset
+	 */
+	getPosInSet?(tree: ITree, element: any): string;
+
+	/**
+	 * Return the aria-setsize of the tree.
+	 * https://www.w3.org/TR/wai-aria/states_and_properties#aria-setsize
+	 */
+	getSetSize?(): string;
 }
 
 export /* abstract */ class ContextMenuEvent {
@@ -562,7 +591,7 @@ export const DRAG_OVER_ACCEPT: IDragOverReaction = { accept: true };
 export const DRAG_OVER_ACCEPT_BUBBLE_UP: IDragOverReaction = { accept: true, bubble: DragOverBubble.BUBBLE_UP };
 export const DRAG_OVER_ACCEPT_BUBBLE_DOWN = (autoExpand = false) => ({ accept: true, bubble: DragOverBubble.BUBBLE_DOWN, autoExpand });
 export const DRAG_OVER_ACCEPT_BUBBLE_UP_COPY: IDragOverReaction = { accept: true, bubble: DragOverBubble.BUBBLE_UP, effect: DragOverEffect.COPY };
-export const DRAG_OVER_ACCEPT_BUBBLE_DOWN_COPY = (autoExpand = false) => ({ accept: true, bubble: DragOverBubble.BUBBLE_DOWN, effect: DragOverEffect.COPY });
+export const DRAG_OVER_ACCEPT_BUBBLE_DOWN_COPY = (autoExpand = false) => ({ accept: true, bubble: DragOverBubble.BUBBLE_DOWN, effect: DragOverEffect.COPY, autoExpand });
 
 export interface IDragAndDropData {
 	update(event: Mouse.DragMouseEvent): void;
@@ -648,6 +677,7 @@ export interface ITreeConfiguration {
 	filter?: IFilter;
 	sorter?: ISorter;
 	accessibilityProvider?: IAccessibilityProvider;
+	styler?: ITreeStyler;
 }
 
 export interface ITreeOptions extends ITreeStyles {
@@ -655,22 +685,32 @@ export interface ITreeOptions extends ITreeStyles {
 	showTwistie?: boolean;
 	indentPixels?: number;
 	verticalScrollMode?: ScrollbarVisibility;
+	horizontalScrollMode?: ScrollbarVisibility;
 	alwaysFocused?: boolean;
 	autoExpandSingleChildren?: boolean;
 	useShadows?: boolean;
 	paddingOnRow?: boolean;
 	ariaLabel?: string;
 	keyboardSupport?: boolean;
+	preventRootFocus?: boolean;
+	showLoading?: boolean;
+}
+
+export interface ITreeStyler {
+	style(styles: ITreeStyles): void;
 }
 
 export interface ITreeStyles {
 	listFocusBackground?: Color;
+	listFocusForeground?: Color;
 	listActiveSelectionBackground?: Color;
 	listActiveSelectionForeground?: Color;
 	listFocusAndSelectionBackground?: Color;
 	listFocusAndSelectionForeground?: Color;
 	listInactiveSelectionBackground?: Color;
+	listInactiveSelectionForeground?: Color;
 	listHoverBackground?: Color;
+	listHoverForeground?: Color;
 	listDropBackground?: Color;
 	listFocusOutline?: Color;
 }

@@ -7,14 +7,60 @@
 import { Position } from 'vs/editor/common/core/position';
 import { CharCode } from 'vs/base/common/charCode';
 import * as strings from 'vs/base/common/strings';
-import { ICommand, IConfigurationChangedEvent, TextModelResolvedOptions, IConfiguration } from 'vs/editor/common/editorCommon';
+import { ICommand, IConfiguration, ScrollType } from 'vs/editor/common/editorCommon';
 import { TextModel } from 'vs/editor/common/model/textModel';
-import { Selection } from 'vs/editor/common/core/selection';
+import { Selection, ISelection } from 'vs/editor/common/core/selection';
 import { Range } from 'vs/editor/common/core/range';
 import { LanguageConfigurationRegistry } from 'vs/editor/common/modes/languageConfigurationRegistry';
 import { onUnexpectedError } from 'vs/base/common/errors';
 import { LanguageIdentifier } from 'vs/editor/common/modes';
 import { IAutoClosingPair } from 'vs/editor/common/modes/languageConfiguration';
+import { IConfigurationChangedEvent } from 'vs/editor/common/config/editorOptions';
+import { IViewModel } from 'vs/editor/common/viewModel/viewModel';
+import { CursorChangeReason } from 'vs/editor/common/controller/cursorEvents';
+import { VerticalRevealType } from 'vs/editor/common/view/viewEvents';
+import { TextModelResolvedOptions, ITextModel } from 'vs/editor/common/model';
+
+export interface IColumnSelectData {
+	toViewLineNumber: number;
+	toViewVisualColumn: number;
+}
+
+export const enum RevealTarget {
+	Primary = 0,
+	TopMost = 1,
+	BottomMost = 2
+}
+
+/**
+ * This is an operation type that will be recorded for undo/redo purposes.
+ * The goal is to introduce an undo stop when the controller switches between different operation types.
+ */
+export const enum EditOperationType {
+	Other = 0,
+	Typing = 1,
+	DeletingLeft = 2,
+	DeletingRight = 3
+}
+
+export interface ICursors {
+	readonly context: CursorContext;
+	getPrimaryCursor(): CursorState;
+	getLastAddedCursorIndex(): number;
+	getAll(): CursorState[];
+
+	getColumnSelectData(): IColumnSelectData;
+	setColumnSelectData(columnSelectData: IColumnSelectData): void;
+
+	setStates(source: string, reason: CursorChangeReason, states: CursorState[]): void;
+	reveal(horizontal: boolean, target: RevealTarget, scrollType: ScrollType): void;
+	revealRange(revealHorizontal: boolean, viewRange: Range, verticalType: VerticalRevealType, scrollType: ScrollType): void;
+
+	scrollTo(desiredScrollTop: number): void;
+
+	getPrevEditOperationType(): EditOperationType;
+	setPrevEditOperationType(type: EditOperationType): void;
+}
 
 export interface CharacterMap {
 	[char: string]: string;
@@ -23,24 +69,35 @@ export interface CharacterMap {
 export class CursorConfiguration {
 	_cursorMoveConfigurationBrand: void;
 
+	public readonly readOnly: boolean;
 	public readonly tabSize: number;
 	public readonly insertSpaces: boolean;
 	public readonly oneIndent: string;
 	public readonly pageSize: number;
+	public readonly lineHeight: number;
 	public readonly useTabStops: boolean;
 	public readonly wordSeparators: string;
+	public readonly emptySelectionClipboard: boolean;
+	public readonly multiCursorMergeOverlapping: boolean;
 	public readonly autoClosingBrackets: boolean;
+	public readonly autoIndent: boolean;
 	public readonly autoClosingPairsOpen: CharacterMap;
 	public readonly autoClosingPairsClose: CharacterMap;
 	public readonly surroundingPairs: CharacterMap;
-	public readonly electricChars: { [key: string]: boolean; };
+
+	private readonly _languageIdentifier: LanguageIdentifier;
+	private _electricChars: { [key: string]: boolean; };
 
 	public static shouldRecreate(e: IConfigurationChangedEvent): boolean {
 		return (
 			e.layoutInfo
 			|| e.wordSeparators
+			|| e.emptySelectionClipboard
+			|| e.multiCursorMergeOverlapping
 			|| e.autoClosingBrackets
 			|| e.useTabStops
+			|| e.lineHeight
+			|| e.readOnly
 		);
 	}
 
@@ -50,27 +107,27 @@ export class CursorConfiguration {
 		modelOptions: TextModelResolvedOptions,
 		configuration: IConfiguration
 	) {
+		this._languageIdentifier = languageIdentifier;
+
 		let c = configuration.editor;
 
+		this.readOnly = c.readOnly;
 		this.tabSize = modelOptions.tabSize;
 		this.insertSpaces = modelOptions.insertSpaces;
 		this.oneIndent = oneIndent;
-		this.pageSize = Math.floor(c.layoutInfo.height / c.fontInfo.lineHeight) - 2;
+		this.pageSize = Math.max(1, Math.floor(c.layoutInfo.height / c.fontInfo.lineHeight) - 2);
+		this.lineHeight = c.lineHeight;
 		this.useTabStops = c.useTabStops;
 		this.wordSeparators = c.wordSeparators;
+		this.emptySelectionClipboard = c.emptySelectionClipboard;
+		this.multiCursorMergeOverlapping = c.multiCursorMergeOverlapping;
 		this.autoClosingBrackets = c.autoClosingBrackets;
+		this.autoIndent = c.autoIndent;
 
 		this.autoClosingPairsOpen = {};
 		this.autoClosingPairsClose = {};
 		this.surroundingPairs = {};
-		this.electricChars = {};
-
-		let electricChars = CursorConfiguration._getElectricCharacters(languageIdentifier);
-		if (electricChars) {
-			for (let i = 0; i < electricChars.length; i++) {
-				this.electricChars[electricChars[i]] = true;
-			}
-		}
+		this._electricChars = null;
 
 		let autoClosingPairs = CursorConfiguration._getAutoClosingPairs(languageIdentifier);
 		if (autoClosingPairs) {
@@ -86,6 +143,19 @@ export class CursorConfiguration {
 				this.surroundingPairs[surroundingPairs[i].open] = surroundingPairs[i].close;
 			}
 		}
+	}
+
+	public get electricChars() {
+		if (!this._electricChars) {
+			this._electricChars = {};
+			let electricChars = CursorConfiguration._getElectricCharacters(this._languageIdentifier);
+			if (electricChars) {
+				for (let i = 0; i < electricChars.length; i++) {
+					this._electricChars[electricChars[i]] = true;
+				}
+			}
+		}
+		return this._electricChars;
 	}
 
 	public normalizeIndentation(str: string): string {
@@ -220,8 +290,100 @@ export class SingleCursorState {
 	}
 }
 
+export class CursorContext {
+	_cursorContextBrand: void;
+
+	public readonly model: ITextModel;
+	public readonly viewModel: IViewModel;
+	public readonly config: CursorConfiguration;
+
+	constructor(configuration: IConfiguration, model: ITextModel, viewModel: IViewModel) {
+		this.model = model;
+		this.viewModel = viewModel;
+		this.config = new CursorConfiguration(
+			this.model.getLanguageIdentifier(),
+			this.model.getOneIndent(),
+			this.model.getOptions(),
+			configuration
+		);
+	}
+
+	public validateViewPosition(viewPosition: Position, modelPosition: Position): Position {
+		return this.viewModel.coordinatesConverter.validateViewPosition(viewPosition, modelPosition);
+	}
+
+	public validateViewRange(viewRange: Range, expectedModelRange: Range): Range {
+		return this.viewModel.coordinatesConverter.validateViewRange(viewRange, expectedModelRange);
+	}
+
+	public convertViewRangeToModelRange(viewRange: Range): Range {
+		return this.viewModel.coordinatesConverter.convertViewRangeToModelRange(viewRange);
+	}
+
+	public convertViewPositionToModelPosition(lineNumber: number, column: number): Position {
+		return this.viewModel.coordinatesConverter.convertViewPositionToModelPosition(new Position(lineNumber, column));
+	}
+
+	public convertModelPositionToViewPosition(modelPosition: Position): Position {
+		return this.viewModel.coordinatesConverter.convertModelPositionToViewPosition(modelPosition);
+	}
+
+	public convertModelRangeToViewRange(modelRange: Range): Range {
+		return this.viewModel.coordinatesConverter.convertModelRangeToViewRange(modelRange);
+	}
+
+	public getCurrentScrollTop(): number {
+		return this.viewModel.viewLayout.getCurrentScrollTop();
+	}
+
+	public getCompletelyVisibleViewRange(): Range {
+		return this.viewModel.getCompletelyVisibleViewRange();
+	}
+
+	public getCompletelyVisibleModelRange(): Range {
+		const viewRange = this.viewModel.getCompletelyVisibleViewRange();
+		return this.viewModel.coordinatesConverter.convertViewRangeToModelRange(viewRange);
+	}
+
+	public getCompletelyVisibleViewRangeAtScrollTop(scrollTop: number): Range {
+		return this.viewModel.getCompletelyVisibleViewRangeAtScrollTop(scrollTop);
+	}
+
+	public getVerticalOffsetForViewLine(viewLineNumber: number): number {
+		return this.viewModel.viewLayout.getVerticalOffsetForLineNumber(viewLineNumber);
+	}
+}
+
 export class CursorState {
 	_cursorStateBrand: void;
+
+	public static fromModelState(modelState: SingleCursorState): CursorState {
+		return new CursorState(modelState, null);
+	}
+
+	public static fromViewState(viewState: SingleCursorState): CursorState {
+		return new CursorState(null, viewState);
+	}
+
+	public static fromModelSelection(modelSelection: ISelection): CursorState {
+		const selectionStartLineNumber = modelSelection.selectionStartLineNumber;
+		const selectionStartColumn = modelSelection.selectionStartColumn;
+		const positionLineNumber = modelSelection.positionLineNumber;
+		const positionColumn = modelSelection.positionColumn;
+		const modelState = new SingleCursorState(
+			new Range(selectionStartLineNumber, selectionStartColumn, selectionStartLineNumber, selectionStartColumn), 0,
+			new Position(positionLineNumber, positionColumn), 0
+		);
+		return CursorState.fromModelState(modelState);
+	}
+
+	public static fromModelSelections(modelSelections: ISelection[]): CursorState[] {
+		let states: CursorState[] = [];
+		for (let i = 0, len = modelSelections.length; i < len; i++) {
+			states[i] = this.fromModelSelection(modelSelections[i]);
+		}
+		return states;
+	}
 
 	readonly modelState: SingleCursorState;
 	readonly viewState: SingleCursorState;
@@ -230,34 +392,32 @@ export class CursorState {
 		this.modelState = modelState;
 		this.viewState = viewState;
 	}
+
+	public equals(other: CursorState): boolean {
+		return (this.viewState.equals(other.viewState) && this.modelState.equals(other.modelState));
+	}
 }
 
 export class EditOperationResult {
-	_editOperationBrand: void;
+	_editOperationResultBrand: void;
 
-	readonly command: ICommand;
+	readonly type: EditOperationType;
+	readonly commands: ICommand[];
 	readonly shouldPushStackElementBefore: boolean;
 	readonly shouldPushStackElementAfter: boolean;
-	readonly isAutoWhitespaceCommand: boolean;
-	readonly shouldRevealHorizontal: boolean;
 
 	constructor(
-		command: ICommand,
+		type: EditOperationType,
+		commands: ICommand[],
 		opts: {
 			shouldPushStackElementBefore: boolean;
 			shouldPushStackElementAfter: boolean;
-			isAutoWhitespaceCommand?: boolean;
 		}
 	) {
-		this.command = command;
+		this.type = type;
+		this.commands = commands;
 		this.shouldPushStackElementBefore = opts.shouldPushStackElementBefore;
 		this.shouldPushStackElementAfter = opts.shouldPushStackElementAfter;
-		this.isAutoWhitespaceCommand = false;
-		this.shouldRevealHorizontal = true;
-
-		if (typeof opts.isAutoWhitespaceCommand !== 'undefined') {
-			this.isAutoWhitespaceCommand = opts.isAutoWhitespaceCommand;
-		}
 	}
 }
 
@@ -297,6 +457,8 @@ export class CursorColumns {
 			let charCode = lineContent.charCodeAt(i);
 			if (charCode === CharCode.Tab) {
 				result = this.nextTabStop(result, tabSize);
+			} else if (strings.isFullWidthCharacter(charCode)) {
+				result = result + 2;
 			} else {
 				result = result + 1;
 			}
@@ -322,6 +484,8 @@ export class CursorColumns {
 			let afterVisibleColumn: number;
 			if (charCode === CharCode.Tab) {
 				afterVisibleColumn = this.nextTabStop(beforeVisibleColumn, tabSize);
+			} else if (strings.isFullWidthCharacter(charCode)) {
+				afterVisibleColumn = beforeVisibleColumn + 2;
 			} else {
 				afterVisibleColumn = beforeVisibleColumn + 1;
 			}

@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 'use strict';
+Object.defineProperty(exports, "__esModule", { value: true });
 var es = require("event-stream");
 var debounce = require("debounce");
 var _filter = require("gulp-filter");
@@ -66,7 +67,7 @@ function fixWin32DirectoryPermissions() {
 exports.fixWin32DirectoryPermissions = fixWin32DirectoryPermissions;
 function setExecutableBit(pattern) {
     var setBit = es.mapSync(function (f) {
-        f.stat.mode = 33261;
+        f.stat.mode = /* 100755 */ 33261;
         return f;
     });
     if (!pattern) {
@@ -142,7 +143,7 @@ function loadSourcemaps() {
             cb(null, f);
             return;
         }
-        f.contents = new Buffer(contents.replace(/\/\/# sourceMappingURL=(.*)$/g, ''), 'utf8');
+        f.contents = Buffer.from(contents.replace(/\/\/# sourceMappingURL=(.*)$/g, ''), 'utf8');
         fs.readFile(path.join(path.dirname(f.path), lastMatch[1]), 'utf8', function (err, contents) {
             if (err) {
                 return cb(err);
@@ -159,7 +160,7 @@ function stripSourceMappingURL() {
     var output = input
         .pipe(es.mapSync(function (f) {
         var contents = f.contents.toString('utf8');
-        f.contents = new Buffer(contents.replace(/\n\/\/# sourceMappingURL=(.*)$/gm, ''), 'utf8');
+        f.contents = Buffer.from(contents.replace(/\n\/\/# sourceMappingURL=(.*)$/gm, ''), 'utf8');
         return f;
     }));
     return es.duplex(input, output);
@@ -172,7 +173,6 @@ function rimraf(dir) {
             if (!err) {
                 return cb();
             }
-            ;
             if (err.code === 'ENOTEMPTY' && ++retries < 5) {
                 return setTimeout(function () { return retry(cb); }, 10);
             }
@@ -210,3 +210,12 @@ function filter(fn) {
     return result;
 }
 exports.filter = filter;
+function versionStringToNumber(versionStr) {
+    var semverRegex = /(\d+)\.(\d+)\.(\d+)/;
+    var match = versionStr.match(semverRegex);
+    if (!match) {
+        throw new Error('Version string is not properly formatted: ' + versionStr);
+    }
+    return parseInt(match[1], 10) * 1e4 + parseInt(match[2], 10) * 1e2 + parseInt(match[3], 10);
+}
+exports.versionStringToNumber = versionStringToNumber;

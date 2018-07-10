@@ -10,7 +10,8 @@ import { assign } from 'vs/base/common/objects';
 import { IRequestOptions, IRequestContext, IRequestFunction, request } from 'vs/base/node/request';
 import { getProxyAgent } from 'vs/base/node/proxy';
 import { IRequestService, IHTTPConfiguration } from 'vs/platform/request/node/request';
-import { IConfigurationService, IConfigurationServiceEvent } from 'vs/platform/configuration/common/configuration';
+import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
+import { ILogService } from 'vs/platform/log/common/log';
 
 /**
  * This service exposes the `request` API, while using the global
@@ -26,14 +27,11 @@ export class RequestService implements IRequestService {
 	private disposables: IDisposable[] = [];
 
 	constructor(
-		@IConfigurationService configurationService: IConfigurationService
+		@IConfigurationService configurationService: IConfigurationService,
+		@ILogService private logService: ILogService
 	) {
-		this.configure(configurationService.getConfiguration<IHTTPConfiguration>());
-		configurationService.onDidUpdateConfiguration(this.onDidUpdateConfiguration, this, this.disposables);
-	}
-
-	private onDidUpdateConfiguration(e: IConfigurationServiceEvent) {
-		this.configure(e.config);
+		this.configure(configurationService.getValue<IHTTPConfiguration>());
+		configurationService.onDidChangeConfiguration(() => this.configure(configurationService.getValue()), this, this.disposables);
 	}
 
 	private configure(config: IHTTPConfiguration) {
@@ -43,15 +41,20 @@ export class RequestService implements IRequestService {
 	}
 
 	request(options: IRequestOptions, requestFn: IRequestFunction = request): TPromise<IRequestContext> {
+		this.logService.trace('RequestService#request', options.url);
+
 		const { proxyUrl, strictSSL } = this;
+		const agentPromise = options.agent ? TPromise.wrap(options.agent) : TPromise.wrap(getProxyAgent(options.url, { proxyUrl, strictSSL }));
 
-		options.agent = options.agent || getProxyAgent(options.url, { proxyUrl, strictSSL });
-		options.strictSSL = strictSSL;
+		return agentPromise.then(agent => {
+			options.agent = agent;
+			options.strictSSL = strictSSL;
 
-		if (this.authorization) {
-			options.headers = assign(options.headers || {}, { 'Proxy-Authorization': this.authorization });
-		}
+			if (this.authorization) {
+				options.headers = assign(options.headers || {}, { 'Proxy-Authorization': this.authorization });
+			}
 
-		return requestFn(options);
+			return requestFn(options);
+		});
 	}
 }

@@ -5,12 +5,13 @@
 
 'use strict';
 
-import path = require('path');
-import assert = require('assert');
+import * as path from 'path';
+import * as assert from 'assert';
 
 import * as arrays from 'vs/base/common/arrays';
+import * as platform from 'vs/base/common/platform';
 
-import { RipgrepParser } from 'vs/workbench/services/search/node/ripgrepTextSearch';
+import { RipgrepParser, getAbsoluteGlob, fixDriveC, fixRegexEndingPattern } from 'vs/workbench/services/search/node/ripgrepTextSearch';
 import { ISerializedFileMatch } from 'vs/workbench/services/search/node/search';
 
 
@@ -19,11 +20,11 @@ suite('RipgrepParser', () => {
 	const fileSectionEnd = '\n';
 
 	function getFileLine(relativePath: string): string {
-		return `\u001b\[m${relativePath}\u001b\[m`;
+		return `\u001b\[0m${relativePath}\u001b\[0m`;
 	}
 
 	function getMatchLine(lineNum: number, matchParts: string[]): string {
-		let matchLine = `\u001b\[m${lineNum}\u001b\[m:` +
+		let matchLine = `\u001b\[0m${lineNum}\u001b\[0m:` +
 			`${matchParts.shift()}${RipgrepParser.MATCH_START_MARKER}${matchParts.shift()}${RipgrepParser.MATCH_END_MARKER}${matchParts.shift()}`;
 
 		while (matchParts.length) {
@@ -33,7 +34,11 @@ suite('RipgrepParser', () => {
 		return matchLine;
 	}
 
-	function parseInput(inputChunks: string[]): ISerializedFileMatch[] {
+	function parseInputStrings(inputChunks: string[]): ISerializedFileMatch[] {
+		return parseInput(inputChunks.map(chunk => Buffer.from(chunk)));
+	}
+
+	function parseInput(inputChunks: Buffer[]): ISerializedFileMatch[] {
 		const matches: ISerializedFileMatch[] = [];
 		const rgp = new RipgrepParser(1e6, rootFolder);
 		rgp.on('result', (match: ISerializedFileMatch) => {
@@ -65,7 +70,7 @@ suite('RipgrepParser', () => {
 			[getFileLine('a.txt'), getMatchLine(1, ['before', 'match', 'after']), getMatchLine(2, ['before', 'match', 'after']), fileSectionEnd].join('\n')
 		];
 
-		const results = parseInput(input);
+		const results = parseInputStrings(input);
 		assert.equal(results.length, 1);
 		assert.deepEqual(results[0],
 			<ISerializedFileMatch>{
@@ -93,7 +98,7 @@ suite('RipgrepParser', () => {
 			[getFileLine('c.txt'), getMatchLine(1, ['before', 'match', 'after']), getMatchLine(2, ['before', 'match', 'after']), fileSectionEnd].join('\n')
 		];
 
-		const results = parseInput(input);
+		const results = parseInputStrings(input);
 		assert.equal(results.length, 3);
 		results.forEach(fileResult => assert.equal(fileResult.numMatches, 2));
 	});
@@ -116,7 +121,7 @@ suite('RipgrepParser', () => {
 	test('Parses multiple chunks broken at each line', () => {
 		const input = singleLineChunks.map(chunk => chunk + '\n');
 
-		const results = parseInput(input);
+		const results = parseInputStrings(input);
 		assert.equal(results.length, 3);
 		results.forEach(fileResult => assert.equal(fileResult.numMatches, 2));
 	});
@@ -126,7 +131,7 @@ suite('RipgrepParser', () => {
 			.map(chunk => chunk + '\n')
 			.map(halve));
 
-		const results = parseInput(input);
+		const results = parseInputStrings(input);
 		assert.equal(results.length, 3);
 		results.forEach(fileResult => assert.equal(fileResult.numMatches, 2));
 	});
@@ -136,7 +141,7 @@ suite('RipgrepParser', () => {
 			.map(chunk => chunk + '\n')
 			.map(arrayOfChars));
 
-		const results = parseInput(input);
+		const results = parseInputStrings(input);
 		assert.equal(results.length, 3);
 		results.forEach(fileResult => assert.equal(fileResult.numMatches, 2));
 	});
@@ -145,8 +150,82 @@ suite('RipgrepParser', () => {
 		const input = singleLineChunks
 			.map(chunk => '\n' + chunk);
 
-		const results = parseInput(input);
+		const results = parseInputStrings(input);
 		assert.equal(results.length, 3);
 		results.forEach(fileResult => assert.equal(fileResult.numMatches, 2));
+	});
+
+	test('Parses chunks broken in the middle of a multibyte character', () => {
+		const text = getFileLine('foo/bar') + '\n' + getMatchLine(0, ['before漢', 'match', 'after']) + '\n';
+		const buf = new Buffer(text);
+
+		// Split the buffer at every possible position - it should still be parsed correctly
+		for (let i = 0; i < buf.length; i++) {
+			const inputBufs = [
+				buf.slice(0, i),
+				buf.slice(i)
+			];
+
+			const results = parseInput(inputBufs);
+			assert.equal(results.length, 1);
+			assert.equal(results[0].lineMatches.length, 1);
+			assert.deepEqual(results[0].lineMatches[0].offsetAndLengths, [[7, 5]]);
+		}
+	});
+});
+
+suite('RipgrepTextSearch - etc', () => {
+	function testGetAbsGlob(params: string[]): void {
+		const [folder, glob, expectedResult] = params;
+		assert.equal(fixDriveC(getAbsoluteGlob(folder, glob)), expectedResult, JSON.stringify(params));
+	}
+
+	test('getAbsoluteGlob_win', () => {
+		if (!platform.isWindows) {
+			return;
+		}
+
+		[
+			['C:/foo/bar', 'glob/**', '/foo\\bar\\glob\\**'],
+			['c:/', 'glob/**', '/glob\\**'],
+			['C:\\foo\\bar', 'glob\\**', '/foo\\bar\\glob\\**'],
+			['c:\\foo\\bar', 'glob\\**', '/foo\\bar\\glob\\**'],
+			['c:\\', 'glob\\**', '/glob\\**'],
+			['\\\\localhost\\c$\\foo\\bar', 'glob/**', '\\\\localhost\\c$\\foo\\bar\\glob\\**'],
+
+			// absolute paths are not resolved further
+			['c:/foo/bar', '/path/something', '/path/something'],
+			['c:/foo/bar', 'c:\\project\\folder', '/project\\folder']
+		].forEach(testGetAbsGlob);
+	});
+
+	test('getAbsoluteGlob_posix', () => {
+		if (platform.isWindows) {
+			return;
+		}
+
+		[
+			['/foo/bar', 'glob/**', '/foo/bar/glob/**'],
+			['/', 'glob/**', '/glob/**'],
+
+			// absolute paths are not resolved further
+			['/', '/project/folder', '/project/folder'],
+		].forEach(testGetAbsGlob);
+	});
+
+	test('fixRegexEndingPattern', () => {
+		function testFixRegexEndingPattern([input, expectedResult]: string[]): void {
+			assert.equal(fixRegexEndingPattern(input), expectedResult);
+		}
+
+		[
+			['foo', 'foo'],
+			['', ''],
+			['^foo.*bar\\s+', '^foo.*bar\\s+'],
+			['foo$', 'foo\\r?$'],
+			['$', '\\r?$'],
+			['foo\\$', 'foo\\$'],
+			['foo\\\\$', 'foo\\\\\\r?$'],
+		].forEach(testFixRegexEndingPattern);
 	});
 });

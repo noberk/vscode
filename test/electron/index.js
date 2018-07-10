@@ -6,14 +6,23 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const { tmpdir } = require('os');
 const { join } = require('path');
+const path = require('path');
+const mocha = require('mocha');
+const events = require('events');
+const MochaJUnitReporter = require('mocha-junit-reporter');
+
+const defaultReporterName = process.platform === 'win32' ? 'list' : 'spec';
 
 const optimist = require('optimist')
 	.describe('grep', 'only run tests matching <pattern>').alias('grep', 'g').alias('grep', 'f').string('grep')
 	.describe('run', 'only run tests from <file>').string('run')
-	.describe('runGrep', 'only run tests matching <file_pattern>').boolean('runGrep')
+	.describe('runGlob', 'only run tests matching <file_pattern>').alias('runGlob', 'runGrep').string('runGlob')
 	.describe('build', 'run with build output (out-build)').boolean('build')
 	.describe('coverage', 'generate coverage report').boolean('coverage')
 	.describe('debug', 'open dev tools, keep window open, reuse app data').string('debug')
+	.describe('reporter', 'the mocha reporter').string('reporter').default('reporter', defaultReporterName)
+	.describe('reporter-options', 'the mocha reporter options').string('reporter-options').default('reporter-options', '')
+	.describe('tfs').string('tfs')
 	.describe('help', 'show the help').alias('help', 'h');
 
 const argv = optimist.argv;
@@ -25,6 +34,67 @@ if (argv.help) {
 
 if (!argv.debug) {
 	app.setPath('userData', join(tmpdir(), `vscode-tests-${Date.now()}`));
+}
+
+function deserializeSuite(suite) {
+	return {
+		root: suite.root,
+		suites: suite.suites,
+		tests: suite.tests,
+		title: suite.title,
+		fullTitle: () => suite.fullTitle,
+		timeout: () => suite.timeout,
+		retries: () => suite.retries,
+		enableTimeouts: () => suite.enableTimeouts,
+		slow: () => suite.slow,
+		bail: () => suite.bail
+	};
+}
+
+function deserializeRunnable(runnable) {
+	return {
+		title: runnable.title,
+		fullTitle: () => runnable.fullTitle,
+		async: runnable.async,
+		slow: () => runnable.slow,
+		speed: runnable.speed,
+		duration: runnable.duration
+	};
+}
+
+function deserializeError(err) {
+	const inspect = err.inspect;
+	err.inspect = () => inspect;
+	return err;
+}
+
+class IPCRunner extends events.EventEmitter {
+
+	constructor() {
+		super();
+
+		this.didFail = false;
+
+		ipcMain.on('start', () => this.emit('start'));
+		ipcMain.on('end', () => this.emit('end'));
+		ipcMain.on('suite', (e, suite) => this.emit('suite', deserializeSuite(suite)));
+		ipcMain.on('suite end', (e, suite) => this.emit('suite end', deserializeSuite(suite)));
+		ipcMain.on('test', (e, test) => this.emit('test', deserializeRunnable(test)));
+		ipcMain.on('test end', (e, test) => this.emit('test end', deserializeRunnable(test)));
+		ipcMain.on('hook', (e, hook) => this.emit('hook', deserializeRunnable(hook)));
+		ipcMain.on('hook end', (e, hook) => this.emit('hook end', deserializeRunnable(hook)));
+		ipcMain.on('pass', (e, test) => this.emit('pass', deserializeRunnable(test)));
+		ipcMain.on('fail', (e, test, err) => {
+			this.didFail = true;
+			this.emit('fail', deserializeRunnable(test), deserializeError(err));
+		});
+		ipcMain.on('pending', (e, test) => this.emit('pending', deserializeRunnable(test)));
+	}
+}
+
+function parseReporterOption(value) {
+	let r = /^([^=]+)=(.*)$/.exec(value);
+	return r ? { [r[1]]: r[2] } : {};
 }
 
 app.on('ready', () => {
@@ -42,35 +112,46 @@ app.on('ready', () => {
 	win.webContents.on('did-finish-load', () => {
 		if (argv.debug) {
 			win.show();
-			win.webContents.openDevTools('right');
+			win.webContents.openDevTools({ mode: 'right' });
 		}
 		win.webContents.send('run', argv);
 	});
 
 	win.loadURL(`file://${__dirname}/renderer.html`);
 
+	const runner = new IPCRunner();
 
-	const _failures = [];
-	ipcMain.on('fail', (e, test) => {
-		_failures.push(test);
-		process.stdout.write('X');
-	});
-	ipcMain.on('pass', () => {
-		process.stdout.write('.');
-	});
+	if (argv.tfs) {
+		new mocha.reporters.Spec(runner);
+		new MochaJUnitReporter(runner, {
+			reporterOptions: {
+				testsuitesTitle: `${argv.tfs} ${process.platform}`,
+				mochaFile: process.env.BUILD_ARTIFACTSTAGINGDIRECTORY ? path.join(process.env.BUILD_ARTIFACTSTAGINGDIRECTORY, `test-results/${process.platform}-${argv.tfs.toLowerCase().replace(/[^\w]/g, '-')}-results.xml`) : undefined
+			}
+		});
+	} else {
+		const reporterPath = path.join(path.dirname(require.resolve('mocha')), 'lib', 'reporters', argv.reporter);
+		let Reporter;
 
-	ipcMain.on('done', () => {
-
-		console.log(`\nDone with ${_failures.length} failures.\n`);
-
-		for (const fail of _failures) {
-			console.error(fail.title);
-			console.error(fail.stack);
-			console.error('\n');
+		try {
+			Reporter = require(reporterPath);
+		} catch (err) {
+			try {
+				Reporter = require(argv.reporter);
+			} catch (err) {
+				Reporter = process.platform === 'win32' ? mocha.reporters.List : mocha.reporters.Spec;
+				console.warn(`could not load reporter: ${argv.reporter}, using ${Reporter.name}`);
+			}
 		}
 
-		if (!argv.debug) {
-			app.exit(_failures.length > 0 ? 1 : 0);
-		}
-	});
+		let reporterOptions = argv['reporter-options'];
+		reporterOptions = typeof reporterOptions === 'string' ? [reporterOptions] : reporterOptions;
+		reporterOptions = reporterOptions.reduce((r, o) => Object.assign(r, parseReporterOption(o)), {});
+
+		new Reporter(runner, { reporterOptions });
+	}
+
+	if (!argv.debug) {
+		ipcMain.on('all done', () => app.exit(runner.didFail ? 1 : 0));
+	}
 });
