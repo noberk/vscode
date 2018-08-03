@@ -24,7 +24,12 @@ enum MessageType {
 }
 
 function isResponse(messageType: MessageType): boolean {
-	return messageType >= MessageType.ResponseInitialize;
+	return messageType === MessageType.ResponseInitialize
+		|| messageType === MessageType.ResponsePromiseSuccess
+		|| messageType === MessageType.ResponsePromiseProgress
+		|| messageType === MessageType.ResponsePromiseError
+		|| messageType === MessageType.ResponsePromiseErrorObj
+		|| messageType === MessageType.ResponseEventFire;
 }
 
 interface IRawMessage {
@@ -94,8 +99,8 @@ export interface IChannelClient {
  * channels (each from a separate client) to pick from.
  */
 export interface IClientRouter {
-	routeCall(command: string, arg: any): string;
-	routeEvent(event: string, arg: any): string;
+	routeCall(command: string, arg: any): TPromise<string>;
+	routeEvent(event: string, arg: any): TPromise<string>;
 }
 
 /**
@@ -260,7 +265,8 @@ export class ChannelClient implements IChannelClient, IDisposable {
 		let uninitializedPromise: TPromise<any> | null = null;
 		const emitter = new Emitter<any>({
 			onFirstListenerAdd: () => {
-				uninitializedPromise = this.whenInitialized().then(() => {
+				uninitializedPromise = this.whenInitialized();
+				uninitializedPromise.then(() => {
 					uninitializedPromise = null;
 					this.send(request.raw);
 				});
@@ -433,24 +439,20 @@ export class IPCServer implements IChannelServer, IRoutingChannelClient, IDispos
 
 	getChannel<T extends IChannel>(channelName: string, router: IClientRouter): T {
 		const call = (command: string, arg: any) => {
-			const id = router.routeCall(command, arg);
+			const channelPromise = router.routeCall(command, arg)
+				.then(id => this.getClient(id))
+				.then(client => client.getChannel(channelName));
 
-			if (!id) {
-				return TPromise.wrapError(new Error('Client id should be provided'));
-			}
-
-			return getDelayedChannel(this.getClient(id).then(client => client.getChannel(channelName)))
+			return getDelayedChannel(channelPromise)
 				.call(command, arg);
 		};
 
 		const listen = (event: string, arg: any) => {
-			const id = router.routeEvent(event, arg);
+			const channelPromise = router.routeEvent(event, arg)
+				.then(id => this.getClient(id))
+				.then(client => client.getChannel(channelName));
 
-			if (!id) {
-				return TPromise.wrapError(new Error('Client id should be provided'));
-			}
-
-			return getDelayedChannel(this.getClient(id).then(client => client.getChannel(channelName)))
+			return getDelayedChannel(channelPromise)
 				.listen(event, arg);
 		};
 
@@ -462,6 +464,10 @@ export class IPCServer implements IChannelServer, IRoutingChannelClient, IDispos
 	}
 
 	private getClient(clientId: string): TPromise<IChannelClient> {
+		if (!clientId) {
+			return TPromise.wrapError(new Error('Client id should be provided'));
+		}
+
 		const client = this.channelClients[clientId];
 
 		if (client) {

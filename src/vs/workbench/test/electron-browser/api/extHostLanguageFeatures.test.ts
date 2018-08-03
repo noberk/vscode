@@ -112,7 +112,7 @@ suite('ExtHostLanguageFeatures', function () {
 		const diagnostics = new ExtHostDiagnostics(rpcProtocol);
 		rpcProtocol.set(ExtHostContext.ExtHostDiagnostics, diagnostics);
 
-		extHost = new ExtHostLanguageFeatures(rpcProtocol, null, extHostDocuments, commands, heapService, diagnostics);
+		extHost = new ExtHostLanguageFeatures(rpcProtocol, null, extHostDocuments, commands, heapService, diagnostics, new NullLogService());
 		rpcProtocol.set(ExtHostContext.ExtHostLanguageFeatures, extHost);
 
 		mainThread = rpcProtocol.set(MainContext.MainThreadLanguageFeatures, inst.createInstance(MainThreadLanguageFeatures, rpcProtocol));
@@ -404,7 +404,7 @@ suite('ExtHostLanguageFeatures', function () {
 		}));
 
 		return rpcProtocol.sync().then(() => {
-			getHover(model, new EditorPosition(1, 1)).then(value => {
+			getHover(model, new EditorPosition(1, 1), CancellationToken.None).then(value => {
 				assert.equal(value.length, 1);
 				let [entry] = value;
 				assert.deepEqual(entry.range, { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 5 });
@@ -423,7 +423,7 @@ suite('ExtHostLanguageFeatures', function () {
 
 		return rpcProtocol.sync().then(() => {
 
-			getHover(model, new EditorPosition(1, 1)).then(value => {
+			getHover(model, new EditorPosition(1, 1), CancellationToken.None).then(value => {
 				assert.equal(value.length, 1);
 				let [entry] = value;
 				assert.deepEqual(entry.range, { startLineNumber: 4, startColumn: 1, endLineNumber: 9, endColumn: 8 });
@@ -447,7 +447,7 @@ suite('ExtHostLanguageFeatures', function () {
 		}));
 
 		return rpcProtocol.sync().then(() => {
-			return getHover(model, new EditorPosition(1, 1)).then(value => {
+			return getHover(model, new EditorPosition(1, 1), CancellationToken.None).then(value => {
 				assert.equal(value.length, 2);
 				let [first, second] = value as Hover[];
 				assert.equal(first.contents[0].value, 'registered second');
@@ -472,7 +472,7 @@ suite('ExtHostLanguageFeatures', function () {
 
 		return rpcProtocol.sync().then(() => {
 
-			getHover(model, new EditorPosition(1, 1)).then(value => {
+			getHover(model, new EditorPosition(1, 1), CancellationToken.None).then(value => {
 
 				assert.equal(value.length, 1);
 			});
